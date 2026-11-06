@@ -5,14 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gestor de Gastos y Tarjetas</title>
 
-    <!-- Configuración PWA para Instalación en Celulares -->
     <meta name="theme-color" content="#4f46e5">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Gastos Hogar">
     <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/2382/2382461.png">
 
-    <!-- Manifest dinámico inyectado -->
     <script>
         const manifest = {
             "name": "Gestor de Gastos y Tarjetas",
@@ -52,7 +50,6 @@
     <script type="text/babel">
         const { useState, useEffect, useMemo } = React;
 
-        // URL de tu Google Apps Script
         const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwYdrWSghwQjTWqGbc2XdifFkFSMoDa-MRNKE_UyrdsuYFy-EeJ5T9d_EM0T_DPZ1yq/exec";
 
         const DEFAULT_STATE = {
@@ -70,11 +67,10 @@
             const [data, setData] = useState(DEFAULT_STATE);
             const [loading, setLoading] = useState(true);
             const [saving, setSaving] = useState(false);
-
-            // Estado para instalación PWA
             const [deferredPrompt, setDeferredPrompt] = useState(null);
 
             const [activeView, setActiveView] = useState('summary');
+            const [searchTerm, setSearchTerm] = useState('');
 
             // Formulario carga / edición
             const [editingId, setEditingId] = useState(null);
@@ -379,6 +375,12 @@
                 return data.expenses.filter(e => e.section === 'Otros').reduce((sum, e) => sum + e.amount, 0);
             }, [data.expenses]);
 
+            // TOTAL GENERAL CORRECTO (Suma Tarjetas + Impuestos + Otros sin duplicar)
+            const totalGeneralGastos = useMemo(() => {
+                const cardsTotalSum = cardSummaries.reduce((acc, c) => acc + c.total, 0);
+                return cardsTotalSum + impuestosTotal + otrosTotal;
+            }, [cardSummaries, impuestosTotal, otrosTotal]);
+
             const totalsByMember = useMemo(() => {
                 const map = {};
                 data.members.forEach(m => map[m] = 0);
@@ -387,6 +389,23 @@
                 });
                 return map;
             }, [data.members, data.expenses]);
+
+            // Filtrado dinámico de movimientos
+            const filteredExpenses = useMemo(() => {
+                let list = data.expenses;
+                if (activeView !== 'summary' && activeView !== 'settings') {
+                    list = list.filter(e => e.section === activeView);
+                }
+                if (!searchTerm.trim()) return list;
+                const term = searchTerm.toLowerCase();
+                return list.filter(item => 
+                    item.description.toLowerCase().includes(term) ||
+                    item.member.toLowerCase().includes(term) ||
+                    item.section.toLowerCase().includes(term) ||
+                    String(item.amount).includes(term) ||
+                    item.date.includes(term)
+                );
+            }, [data.expenses, activeView, searchTerm]);
 
             if (loading) {
                 return (
@@ -450,7 +469,7 @@
                         <div className="bg-slate-800 text-white p-5 rounded-xl shadow">
                             <span className="text-xs font-semibold uppercase tracking-wider opacity-80">Total General Gastos</span>
                             <div className="text-3xl font-extrabold mt-1">
-                                ${(cardSummaries.reduce((acc, c) => acc + c.total, 0) + impuestosTotal + otrosTotal).toLocaleString('es-AR', { maximumFractionDigits: 0 })}
+                                ${totalGeneralGastos.toLocaleString('es-AR', { maximumFractionDigits: 0 })}
                             </div>
                             <span className="text-xs text-slate-400 mt-2 block">Tarjetas + Impuestos + Otros</span>
                         </div>
@@ -461,20 +480,19 @@
                         <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">Secciones y Tarjetas</h3>
                         <div className="flex flex-wrap gap-2">
                             <button 
-                                onClick={() => { setActiveView('summary'); handleCancelEdit(); }}
+                                onClick={() => { setActiveView('summary'); handleCancelEdit(); setSearchTerm(''); }}
                                 className={`px-4 py-2.5 rounded-lg font-bold text-sm transition ${activeView === 'summary' ? 'bg-indigo-600 text-white shadow' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
                             >
                                 📊 Resumen General
                             </button>
 
-                            {/* Botones de Tarjetas mostrando Total con Imp. y Subtotal sin Imp. */}
                             {data.cards.map(c => {
                                 const cardInfo = cardSummaries.find(cs => cs.name === c.name) || { total: 0, subtotal: 0 };
                                 const isSelected = activeView === c.name;
                                 return (
                                     <button 
                                         key={c.name}
-                                        onClick={() => { setActiveView(c.name); handleCancelEdit(); }}
+                                        onClick={() => { setActiveView(c.name); handleCancelEdit(); setSearchTerm(''); }}
                                         className={`px-3 py-2 rounded-lg font-bold text-xs md:text-sm transition flex flex-col items-start ${isSelected ? 'bg-indigo-600 text-white shadow' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
                                     >
                                         <div className="flex items-center gap-1.5">
@@ -491,7 +509,7 @@
                             })}
 
                             <button 
-                                onClick={() => { setActiveView('Impuestos'); handleCancelEdit(); }}
+                                onClick={() => { setActiveView('Impuestos'); handleCancelEdit(); setSearchTerm(''); }}
                                 className={`px-4 py-2.5 rounded-lg font-bold text-sm transition flex items-center gap-2 ${activeView === 'Impuestos' ? 'bg-indigo-600 text-white shadow' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
                             >
                                 <span>🏛️ Impuestos</span>
@@ -501,7 +519,7 @@
                             </button>
 
                             <button 
-                                onClick={() => { setActiveView('Otros'); handleCancelEdit(); }}
+                                onClick={() => { setActiveView('Otros'); handleCancelEdit(); setSearchTerm(''); }}
                                 className={`px-4 py-2.5 rounded-lg font-bold text-sm transition flex items-center gap-2 ${activeView === 'Otros' ? 'bg-indigo-600 text-white shadow' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
                             >
                                 <span>📂 Otros</span>
@@ -511,7 +529,7 @@
                             </button>
 
                             <button 
-                                onClick={() => { setActiveView('settings'); handleCancelEdit(); }}
+                                onClick={() => { setActiveView('settings'); handleCancelEdit(); setSearchTerm(''); }}
                                 className={`px-4 py-2.5 rounded-lg font-bold text-sm transition ${activeView === 'settings' ? 'bg-slate-800 text-white shadow' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
                             >
                                 ⚙️ Ajustes / Tarjetas
@@ -521,56 +539,102 @@
 
                     {/* VISTA: RESUMEN GENERAL */}
                     {activeView === 'summary' && (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-                                <h3 className="font-bold text-slate-800 mb-1">💳 Totales por Tarjeta a Pagar</h3>
-                                <p className="text-xs text-slate-500 mb-4">Incluye 1,2% Impuesto al Sello en Crédito.</p>
-                                <div className="space-y-4">
-                                    {cardSummaries.map(card => (
-                                        <div key={card.name} onClick={() => setActiveView(card.name)} className="p-3 bg-slate-50 hover:bg-slate-100 cursor-pointer rounded-lg border border-slate-200 transition">
-                                            <div className="flex justify-between items-center mb-1">
-                                                <span className="font-bold text-slate-800">{card.name}</span>
-                                                <span className="font-extrabold text-slate-900 text-lg">${card.total.toLocaleString('es-AR', { maximumFractionDigits: 0 })}</span>
-                                            </div>
-                                            {card.isCredit && (
-                                                <div className="text-[11px] text-slate-500 flex justify-between pt-2 border-t border-slate-200">
-                                                    <span>Consumos: ${card.subtotal.toLocaleString('es-AR')}</span>
-                                                    <span className="text-amber-700 font-medium">+ Imp. Sello (1,2%): ${card.taxStamp.toLocaleString('es-AR', { maximumFractionDigits: 0 })}</span>
-                                                </div>
-                                            )}
-                                        </div>
-                                    ))}
-                                    <div onClick={() => setActiveView('Impuestos')} className="p-3 bg-slate-50 hover:bg-slate-100 cursor-pointer rounded-lg border border-slate-200 flex justify-between items-center transition">
-                                        <span className="font-bold text-slate-800">🏛️ Impuestos</span>
-                                        <span className="font-bold text-slate-900">${impuestosTotal.toLocaleString('es-AR')}</span>
-                                    </div>
-                                    <div onClick={() => setActiveView('Otros')} className="p-3 bg-slate-50 hover:bg-slate-100 cursor-pointer rounded-lg border border-slate-200 flex justify-between items-center transition">
-                                        <span className="font-bold text-slate-800">📂 Otros</span>
-                                        <span className="font-bold text-slate-900">${otrosTotal.toLocaleString('es-AR')}</span>
-                                    </div>
-                                </div>
+                        <div className="space-y-6">
+                            {/* Buscador General en Resumen */}
+                            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">🔍 Buscar en todos los movimientos</label>
+                                <input 
+                                    type="text" 
+                                    placeholder="Buscar por detalle, tarjeta, integrante, monto o fecha..." 
+                                    value={searchTerm}
+                                    onChange={e => setSearchTerm(e.target.value)}
+                                    className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                                />
                             </div>
 
-                            <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-                                <h3 className="font-bold text-slate-800 mb-1">👥 Consumo por Integrante</h3>
-                                <p className="text-xs text-slate-500 mb-4">Para saber cuánto debe aportar cada integrante.</p>
-                                <div className="space-y-3">
-                                    {Object.entries(totalsByMember).map(([memberName, total]) => {
-                                        const isPrimary = memberName === primaryMember;
-                                        return (
-                                            <div key={memberName} className="p-3 bg-slate-50 rounded-lg border border-slate-200 flex justify-between items-center">
-                                                <div>
-                                                    <div className="font-bold text-slate-800 text-sm">{memberName}</div>
-                                                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${isPrimary ? 'bg-indigo-100 text-indigo-700' : 'bg-amber-100 text-amber-800'}`}>
-                                                        {isPrimary ? 'Descuenta del Sueldo' : 'No descuenta del Sueldo'}
-                                                    </span>
+                            {searchTerm.trim() ? (
+                                <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                                    <div className="p-4 bg-slate-50 border-b border-slate-200 font-bold text-sm text-slate-700">
+                                        Resultados de búsqueda ({filteredExpenses.length})
+                                    </div>
+                                    {filteredExpenses.length === 0 ? (
+                                        <div className="p-8 text-center text-slate-400 text-sm">No se encontraron movimientos.</div>
+                                    ) : (
+                                        <div className="divide-y divide-slate-100">
+                                            {filteredExpenses.map(item => (
+                                                <div key={item.id} className="p-4 flex flex-wrap justify-between items-center gap-3 hover:bg-slate-50 transition">
+                                                    <div>
+                                                        <div className="font-semibold text-slate-800 text-sm">{item.description}</div>
+                                                        <div className="flex flex-wrap gap-2 mt-1 items-center">
+                                                            <span className="text-[11px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-bold">{item.section}</span>
+                                                            <span className="text-[11px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded font-medium">{item.member}</span>
+                                                            <span className="text-[11px] text-slate-400">{item.date}</span>
+                                                            {item.totalInstallments > 1 && (
+                                                                <span className="text-[11px] bg-purple-100 text-purple-700 font-bold px-2 py-0.5 rounded">
+                                                                    Cuota {item.currentInstallment} de {item.totalInstallments}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                    <div className="font-bold text-slate-900 text-base">${item.amount.toLocaleString('es-AR')}</div>
                                                 </div>
-                                                <span className="font-bold text-slate-900 text-base">${total.toLocaleString('es-AR')}</span>
-                                            </div>
-                                        );
-                                    })}
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
-                            </div>
+                            ) : (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+                                        <h3 className="font-bold text-slate-800 mb-1">💳 Totales por Tarjeta a Pagar</h3>
+                                        <p className="text-xs text-slate-500 mb-4">Incluye 1,2% Impuesto al Sello en Crédito.</p>
+                                        <div className="space-y-4">
+                                            {cardSummaries.map(card => (
+                                                <div key={card.name} onClick={() => setActiveView(card.name)} className="p-3 bg-slate-50 hover:bg-slate-100 cursor-pointer rounded-lg border border-slate-200 transition">
+                                                    <div className="flex justify-between items-center mb-1">
+                                                        <span className="font-bold text-slate-800">{card.name}</span>
+                                                        <span className="font-extrabold text-slate-900 text-lg">${card.total.toLocaleString('es-AR', { maximumFractionDigits: 0 })}</span>
+                                                    </div>
+                                                    {card.isCredit && (
+                                                        <div className="text-[11px] text-slate-500 flex justify-between pt-2 border-t border-slate-200">
+                                                            <span>Consumos: ${card.subtotal.toLocaleString('es-AR')}</span>
+                                                            <span className="text-amber-700 font-medium">+ Imp. Sello (1,2%): ${card.taxStamp.toLocaleString('es-AR', { maximumFractionDigits: 0 })}</span>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ))}
+                                            <div onClick={() => setActiveView('Impuestos')} className="p-3 bg-slate-50 hover:bg-slate-100 cursor-pointer rounded-lg border border-slate-200 flex justify-between items-center transition">
+                                                <span className="font-bold text-slate-800">🏛️ Impuestos</span>
+                                                <span className="font-bold text-slate-900">${impuestosTotal.toLocaleString('es-AR')}</span>
+                                            </div>
+                                            <div onClick={() => setActiveView('Otros')} className="p-3 bg-slate-50 hover:bg-slate-100 cursor-pointer rounded-lg border border-slate-200 flex justify-between items-center transition">
+                                                <span className="font-bold text-slate-800">📂 Otros</span>
+                                                <span className="font-bold text-slate-900">${otrosTotal.toLocaleString('es-AR')}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+                                        <h3 className="font-bold text-slate-800 mb-1">👥 Consumo por Integrante</h3>
+                                        <p className="text-xs text-slate-500 mb-4">Para saber cuánto debe aportar cada integrante.</p>
+                                        <div className="space-y-3">
+                                            {Object.entries(totalsByMember).map(([memberName, total]) => {
+                                                const isPrimary = memberName === primaryMember;
+                                                return (
+                                                    <div key={memberName} className="p-3 bg-slate-50 rounded-lg border border-slate-200 flex justify-between items-center">
+                                                        <div>
+                                                            <div className="font-bold text-slate-800 text-sm">{memberName}</div>
+                                                            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${isPrimary ? 'bg-indigo-100 text-indigo-700' : 'bg-amber-100 text-amber-800'}`}>
+                                                                {isPrimary ? 'Descuenta del Sueldo' : 'No descuenta del Sueldo'}
+                                                            </span>
+                                                        </div>
+                                                        <span className="font-bold text-slate-900 text-base">${total.toLocaleString('es-AR')}</span>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -687,19 +751,30 @@
                                 </form>
                             </div>
 
+                            {/* Buscador específico de la sección */}
+                            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                                <input 
+                                    type="text" 
+                                    placeholder={`🔍 Filtrar movimientos en ${activeView} (por detalle, monto, fecha o integrante)...`} 
+                                    value={searchTerm}
+                                    onChange={e => setSearchTerm(e.target.value)}
+                                    className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                                />
+                            </div>
+
                             {/* Listado con Editar y Eliminar */}
                             <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                                 <div className="p-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
                                     <h3 className="font-bold text-slate-700 text-sm">Movimientos en {activeView}</h3>
                                     <span className="text-xs text-slate-500">
-                                        {data.expenses.filter(e => e.section === activeView).length} registros
+                                        {filteredExpenses.length} registros
                                     </span>
                                 </div>
-                                {data.expenses.filter(e => e.section === activeView).length === 0 ? (
-                                    <div className="p-8 text-center text-slate-400 text-sm">No hay movimientos cargados en esta sección.</div>
+                                {filteredExpenses.length === 0 ? (
+                                    <div className="p-8 text-center text-slate-400 text-sm">No se encontraron movimientos.</div>
                                 ) : (
                                     <div className="divide-y divide-slate-100">
-                                        {data.expenses.filter(e => e.section === activeView).map(item => (
+                                        {filteredExpenses.map(item => (
                                             <div key={item.id} className={`p-4 flex flex-wrap justify-between items-center gap-3 transition ${editingId === item.id ? 'bg-amber-50' : 'hover:bg-slate-50'}`}>
                                                 <div>
                                                     <div className="font-semibold text-slate-800 text-sm">{item.description}</div>
