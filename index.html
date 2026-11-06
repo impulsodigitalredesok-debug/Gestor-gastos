@@ -48,13 +48,17 @@
             const [totalInstallments, setTotalInstallments] = useState(1);
             const [isRecurring, setIsRecurring] = useState(false);
 
-            // Formulario sueldo
+            // Formulario configuración editable
             const [newSalary, setNewSalary] = useState('');
             const [newPayDate, setNewPayDate] = useState('');
+            const [newMemberName, setNewMemberName] = useState('');
+            const [newCardName, setNewCardName] = useState('');
+            const [newCardIsCredit, setNewCardIsCredit] = useState(true);
+            const [newCategoryName, setNewCategoryName] = useState('');
 
             const [tab, setTab] = useState('summary');
 
-            // Cargar datos desde Google Sheets al iniciar
+            // Cargar datos desde Google Sheets
             const fetchData = async () => {
                 setLoading(true);
                 try {
@@ -63,13 +67,24 @@
                     if (json) {
                         setData(prev => ({
                             ...prev,
-                            salary: json.salary || 0,
-                            payDate: json.payDate || '',
+                            salary: json.salary !== undefined ? json.salary : prev.salary,
+                            payDate: json.payDate || prev.payDate,
+                            members: json.members?.length > 0 ? json.members : prev.members,
+                            cards: json.cards?.length > 0 ? json.cards : prev.cards,
+                            categories: json.categories?.length > 0 ? json.categories : prev.categories,
                             expenses: json.expenses || []
                         }));
-                        if (json.cards?.length > 0 && !selectedCard) setSelectedCard(json.cards[0].name);
-                        if (json.members?.length > 0 && !selectedMember) setSelectedMember(json.members[0]);
-                        if (json.categories?.length > 0 && !selectedCategory) setSelectedCategory(json.categories[0]);
+                        if (json.cards?.length > 0 && (!selectedCard || !json.cards.some(c => c.name === selectedCard))) {
+                            setSelectedCard(json.cards[0].name);
+                        }
+                        if (json.members?.length > 0 && (!selectedMember || !json.members.includes(selectedMember))) {
+                            setSelectedMember(json.members[0]);
+                        }
+                        if (json.categories?.length > 0 && (!selectedCategory || !json.categories.includes(selectedCategory))) {
+                            setSelectedCategory(json.categories[0]);
+                        }
+                        if (json.salary) setNewSalary(json.salary);
+                        if (json.payDate) setNewPayDate(json.payDate);
                     }
                 } catch (err) {
                     console.error("Error cargando desde Google Sheets:", err);
@@ -82,7 +97,33 @@
                 fetchData();
             }, []);
 
-            // Guardar gasto en Google Sheets
+            // Guardar configuración completa en la nube
+            const saveSettingsToCloud = async (updatedData) => {
+                setSaving(true);
+                try {
+                    await fetch(SCRIPT_URL, {
+                        method: 'POST',
+                        mode: 'no-cors',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            action: "saveSettings",
+                            salary: updatedData.salary,
+                            payDate: updatedData.payDate,
+                            members: updatedData.members,
+                            cards: updatedData.cards,
+                            categories: updatedData.categories
+                        })
+                    });
+                    setData(updatedData);
+                    alert("¡Configuración guardada con éxito!");
+                } catch (err) {
+                    alert("Error al guardar la configuración.");
+                } finally {
+                    setSaving(false);
+                }
+            };
+
+            // Guardar Gasto
             const handleAddExpense = async (e) => {
                 e.preventDefault();
                 if (!amount || Number(amount) <= 0) return;
@@ -111,37 +152,13 @@
                         body: JSON.stringify({ action: "addExpense", expense: newExp })
                     });
                     
-                    // Actualización local rápida
                     setData(prev => ({ ...prev, expenses: [newExp, ...prev.expenses] }));
                     setAmount('');
                     setDescription('');
                     setTotalInstallments(1);
                     setIsRecurring(false);
                 } catch (err) {
-                    alert("Error al guardar el gasto.");
-                } finally {
-                    setSaving(false);
-                }
-            };
-
-            // Guardar Sueldo
-            const handleSaveSalary = async (e) => {
-                e.preventDefault();
-                setSaving(true);
-                const sal = Number(newSalary || data.salary);
-                const date = newPayDate || data.payDate;
-
-                try {
-                    await fetch(SCRIPT_URL, {
-                        method: 'POST',
-                        mode: 'no-cors',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ action: "saveSalary", salary: sal, payDate: date })
-                    });
-                    setData(prev => ({ ...prev, salary: sal, payDate: date }));
-                    alert("Sueldo y fecha actualizados.");
-                } catch (err) {
-                    alert("Error al guardar el sueldo.");
+                    alert("Error al registrar el gasto.");
                 } finally {
                     setSaving(false);
                 }
@@ -188,10 +205,85 @@
                 }
             };
 
+            // Funciones de Edición de Configuración
+            const handleSaveSalaryForm = (e) => {
+                e.preventDefault();
+                const updated = {
+                    ...data,
+                    salary: Number(newSalary !== '' ? newSalary : data.salary),
+                    payDate: newPayDate || data.payDate
+                };
+                saveSettingsToCloud(updated);
+            };
+
+            const handleAddMember = (e) => {
+                e.preventDefault();
+                if (!newMemberName.trim() || data.members.includes(newMemberName.trim())) return;
+                const updated = {
+                    ...data,
+                    members: [...data.members, newMemberName.trim()]
+                };
+                setNewMemberName('');
+                saveSettingsToCloud(updated);
+            };
+
+            const handleRemoveMember = (name) => {
+                if (data.members.length <= 1) {
+                    alert("Debe haber al menos un integrante principal.");
+                    return;
+                }
+                const updated = {
+                    ...data,
+                    members: data.members.filter(m => m !== name)
+                };
+                saveSettingsToCloud(updated);
+            };
+
+            const handleAddCard = (e) => {
+                e.preventDefault();
+                if (!newCardName.trim() || data.cards.some(c => c.name === newCardName.trim())) return;
+                const updated = {
+                    ...data,
+                    cards: [...data.cards, { name: newCardName.trim(), isCredit: newCardIsCredit }]
+                };
+                setNewCardName('');
+                saveSettingsToCloud(updated);
+            };
+
+            const handleRemoveCard = (name) => {
+                if (data.cards.length <= 1) {
+                    alert("Debe haber al menos una tarjeta o medio de pago.");
+                    return;
+                }
+                const updated = {
+                    ...data,
+                    cards: data.cards.filter(c => c.name !== name)
+                };
+                saveSettingsToCloud(updated);
+            };
+
+            const handleAddCategory = (e) => {
+                e.preventDefault();
+                if (!newCategoryName.trim() || data.categories.includes(newCategoryName.trim())) return;
+                const updated = {
+                    ...data,
+                    categories: [...data.categories, newCategoryName.trim()]
+                };
+                setNewCategoryName('');
+                saveSettingsToCloud(updated);
+            };
+
+            const handleRemoveCategory = (cat) => {
+                const updated = {
+                    ...data,
+                    categories: data.categories.filter(c => c !== cat)
+                };
+                saveSettingsToCloud(updated);
+            };
+
             // CÁLCULOS
             const primaryMember = data.members[0] || 'Yo (Principal)';
 
-            // Gastos del usuario principal
             const primaryExpensesTotal = useMemo(() => {
                 return data.expenses
                     .filter(e => e.member === primaryMember)
@@ -200,7 +292,6 @@
 
             const remainingSalary = data.salary - primaryExpensesTotal;
 
-            // Días restantes para cobrar
             const daysRemaining = useMemo(() => {
                 if (!data.payDate) return 0;
                 const today = new Date();
@@ -214,7 +305,6 @@
 
             const dailyBudget = daysRemaining > 0 ? (remainingSalary / daysRemaining) : remainingSalary;
 
-            // Resumen por Tarjetas (con Impuesto al Sello del 1.2% en tarjetas de crédito)
             const cardSummaries = useMemo(() => {
                 return data.cards.map(cardObj => {
                     const cardName = cardObj.name;
@@ -233,7 +323,6 @@
                 });
             }, [data.cards, data.expenses]);
 
-            // Totales por integrante
             const totalsByMember = useMemo(() => {
                 const map = {};
                 data.members.forEach(m => map[m] = 0);
@@ -260,7 +349,7 @@
                     <header className="mb-6 flex flex-wrap justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-slate-200 gap-3">
                         <div>
                             <h1 className="text-xl font-bold text-slate-900">Gestor de Gastos y Tarjetas</h1>
-                            <p className="text-xs text-slate-500">Conectado a tu Google Sheets en tiempo real</p>
+                            <p className="text-xs text-slate-500">Sincronizado en tiempo real con Google Sheets</p>
                         </div>
                         <div className="flex gap-2">
                             <button 
@@ -422,7 +511,7 @@
                             onClick={() => setTab('settings')}
                             className={`py-3 px-4 font-semibold text-sm border-b-2 transition ${tab === 'settings' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500'}`}
                         >
-                            ⚙️ Ajustes de Sueldo
+                            ⚙️ Ajustes y Configuración
                         </button>
                     </div>
 
@@ -518,40 +607,155 @@
                         </div>
                     )}
 
-                    {/* TAB: AJUSTES */}
+                    {/* TAB: AJUSTES Y CONFIGURACIÓN */}
                     {tab === 'settings' && (
-                        <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-                            <h3 className="font-bold text-slate-800 mb-4">Configurar Sueldo y Cobro</h3>
-                            <form onSubmit={handleSaveSalary} className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                <div>
-                                    <label className="block text-xs font-medium text-slate-500 mb-1">Monto de Sueldo ($)</label>
-                                    <input 
-                                        type="number" 
-                                        placeholder={data.salary}
-                                        value={newSalary} 
-                                        onChange={e => setNewSalary(e.target.value)}
-                                        className="w-full border border-slate-300 rounded-lg p-2 text-sm outline-none"
-                                    />
+                        <div className="space-y-6">
+                            {/* Sueldo y Fecha */}
+                            <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+                                <h3 className="font-bold text-slate-800 mb-4">Configurar Sueldo y Cobro</h3>
+                                <form onSubmit={handleSaveSalaryForm} className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div>
+                                        <label className="block text-xs font-medium text-slate-500 mb-1">Monto de Sueldo ($)</label>
+                                        <input 
+                                            type="number" 
+                                            value={newSalary} 
+                                            onChange={e => setNewSalary(e.target.value)}
+                                            className="w-full border border-slate-300 rounded-lg p-2 text-sm outline-none"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-medium text-slate-500 mb-1">Próxima Fecha de Cobro</label>
+                                        <input 
+                                            type="date" 
+                                            value={newPayDate} 
+                                            onChange={e => setNewPayDate(e.target.value)}
+                                            className="w-full border border-slate-300 rounded-lg p-2 text-sm outline-none"
+                                        />
+                                    </div>
+                                    <div className="flex items-end">
+                                        <button 
+                                            type="submit" 
+                                            disabled={saving}
+                                            className="w-full bg-slate-800 hover:bg-slate-900 text-white font-semibold py-2 px-4 rounded-lg text-sm disabled:opacity-50"
+                                        >
+                                            Guardar Sueldo
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+
+                            {/* Gestión de Tarjetas y Medios de Pago */}
+                            <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+                                <h3 className="font-bold text-slate-800 mb-2">💳 Tarjetas y Medios de Pago</h3>
+                                <p className="text-xs text-slate-500 mb-4">Agregá o eliminá tarjetas. Las de crédito calculan automáticamente el 1,2% de Impuesto al Sello.</p>
+                                <div className="space-y-2 mb-4">
+                                    {data.cards.map(c => (
+                                        <div key={c.name} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-100 text-sm">
+                                            <div>
+                                                <span className="font-bold text-slate-800">{c.name}</span>
+                                                <span className={`ml-2 text-xs px-2 py-0.5 rounded ${c.isCredit ? 'bg-purple-100 text-purple-700' : 'bg-slate-200 text-slate-700'}`}>
+                                                    {c.isCredit ? 'Crédito (+ 1.2% Sello)' : 'Débito / Efectivo'}
+                                                </span>
+                                            </div>
+                                            <button 
+                                                onClick={() => handleRemoveCard(c.name)}
+                                                className="text-red-500 hover:text-red-700 text-xs font-semibold px-2 py-1"
+                                            >
+                                                Eliminar
+                                            </button>
+                                        </div>
+                                    ))}
                                 </div>
-                                <div>
-                                    <label className="block text-xs font-medium text-slate-500 mb-1">Próxima Fecha de Cobro</label>
-                                    <input 
-                                        type="date" 
-                                        value={newPayDate || data.payDate} 
-                                        onChange={e => setNewPayDate(e.target.value)}
-                                        className="w-full border border-slate-300 rounded-lg p-2 text-sm outline-none"
-                                    />
-                                </div>
-                                <div className="flex items-end">
-                                    <button 
-                                        type="submit" 
-                                        disabled={saving}
-                                        className="w-full bg-slate-800 hover:bg-slate-900 text-white font-semibold py-2 px-4 rounded-lg text-sm disabled:opacity-50"
-                                    >
-                                        {saving ? 'Guardando...' : 'Guardar Cambios'}
+                                <form onSubmit={handleAddCard} className="flex flex-wrap gap-2 items-end pt-2 border-t border-slate-100">
+                                    <div className="flex-1 min-w-[200px]">
+                                        <label className="block text-xs font-medium text-slate-500 mb-1">Nombre de la tarjeta</label>
+                                        <input 
+                                            type="text" 
+                                            placeholder="ej: Visa Macro, Naranja X"
+                                            value={newCardName}
+                                            onChange={e => setNewCardName(e.target.value)}
+                                            className="w-full border border-slate-300 rounded-lg p-2 text-sm outline-none"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-medium text-slate-500 mb-1">¿Lleva Imp. Sello (1,2%)?</label>
+                                        <select 
+                                            value={newCardIsCredit}
+                                            onChange={e => setNewCardIsCredit(e.target.value === 'true')}
+                                            className="border border-slate-300 rounded-lg p-2 text-sm bg-white outline-none"
+                                        >
+                                            <option value="true">Sí (Crédito)</option>
+                                            <option value="false">No (Débito/Efectivo)</option>
+                                        </select>
+                                    </div>
+                                    <button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg text-sm">
+                                        + Agregar Tarjeta
                                     </button>
+                                </form>
+                            </div>
+
+                            {/* Gestión de Integrantes */}
+                            <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+                                <h3 className="font-bold text-slate-800 mb-2">👥 Integrantes / Compradores</h3>
+                                <p className="text-xs text-slate-500 mb-4">El primer integrante de la lista es el usuario principal (su sueldo es el que se descuenta).</p>
+                                <div className="space-y-2 mb-4">
+                                    {data.members.map((m, idx) => (
+                                        <div key={m} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-100 text-sm">
+                                            <div>
+                                                <span className="font-bold text-slate-800">{m}</span>
+                                                {idx === 0 && <span className="ml-2 text-xs bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded">Principal</span>}
+                                            </div>
+                                            {idx > 0 && (
+                                                <button 
+                                                    onClick={() => handleRemoveMember(m)}
+                                                    className="text-red-500 hover:text-red-700 text-xs font-semibold px-2 py-1"
+                                                >
+                                                    Eliminar
+                                                </button>
+                                            )}
+                                        </div>
+                                    ))}
                                 </div>
-                            </form>
+                                <form onSubmit={handleAddMember} className="flex gap-2 items-end pt-2 border-t border-slate-100">
+                                    <input 
+                                        type="text" 
+                                        placeholder="Nombre del integrante"
+                                        value={newMemberName}
+                                        onChange={e => setNewMemberName(e.target.value)}
+                                        className="flex-1 border border-slate-300 rounded-lg p-2 text-sm outline-none"
+                                    />
+                                    <button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg text-sm">
+                                        + Agregar Integrante
+                                    </button>
+                                </form>
+                            </div>
+
+                            {/* Gestión de Categorías */}
+                            <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+                                <h3 className="font-bold text-slate-800 mb-2">🏷️ Categorías</h3>
+                                <div className="flex flex-wrap gap-2 mb-4">
+                                    {data.categories.map(cat => (
+                                        <span key={cat} className="inline-flex items-center gap-1 bg-slate-100 border border-slate-200 text-slate-700 px-3 py-1.5 rounded-lg text-xs font-medium">
+                                            {cat}
+                                            {cat !== 'Impuestos' && (
+                                                <button onClick={() => handleRemoveCategory(cat)} className="text-red-400 hover:text-red-600 font-bold ml-1">✕</button>
+                                            )}
+                                        </span>
+                                    ))}
+                                </div>
+                                <form onSubmit={handleAddCategory} className="flex gap-2 items-end pt-2 border-t border-slate-100">
+                                    <input 
+                                        type="text" 
+                                        placeholder="Nueva categoría (ej: Nafta, Salud)"
+                                        value={newCategoryName}
+                                        onChange={e => setNewCategoryName(e.target.value)}
+                                        className="flex-1 border border-slate-300 rounded-lg p-2 text-sm outline-none"
+                                    />
+                                    <button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg text-sm">
+                                        + Agregar Categoría
+                                    </button>
+                                </form>
+                            </div>
                         </div>
                     )}
                 </div>
