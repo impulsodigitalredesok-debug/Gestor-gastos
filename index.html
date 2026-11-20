@@ -50,7 +50,7 @@
     <script type="text/babel">
         const { useState, useEffect, useMemo } = React;
 
-        const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwYdrWSghwQjTWqGbc2XdifFkFSMoDa-MRNKE_UyrdsuYFy-EeJ5T9d_EM0T_DPZ1yq/exec";
+        const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxk0vbW-yK_b1xYUsySrAxiLA92sKePxYg5YSNIQiXN4catUBQGImy8wbiqEbW_TKbZ/exec";
 
         const DEFAULT_STATE = {
             salary: 0,
@@ -84,6 +84,7 @@
             const [totalInstallments, setTotalInstallments] = useState(3);
             const [currentInstallment, setCurrentInstallment] = useState(1);
             const [isRecurring, setIsRecurring] = useState(false);
+            const [isNextMonth, setIsNextMonth] = useState(false);
 
             // Ajustes
             const [newSalary, setNewSalary] = useState('');
@@ -180,7 +181,8 @@
                     currentInstallment: editingId ? currentInstallment : (parsedInstallments > 1 ? 1 : 1),
                     totalInstallments: parsedInstallments > 1 ? parsedInstallments : 1,
                     isRecurring: isRecurring,
-                    date: expenseDate || new Date().toISOString().split('T')[0]
+                    date: expenseDate || new Date().toISOString().split('T')[0],
+                    isNextMonth: Boolean(isNextMonth)
                 };
 
                 const actionType = editingId ? "editExpense" : "addExpense";
@@ -209,6 +211,7 @@
                     setTotalInstallments(3);
                     setCurrentInstallment(1);
                     setIsRecurring(false);
+                    setIsNextMonth(false);
                     setExpenseDate(new Date().toISOString().split('T')[0]);
                 } catch (err) {
                     alert("Error al guardar el movimiento.");
@@ -223,6 +226,7 @@
                 setDescription(item.description);
                 setSelectedMember(item.member);
                 setExpenseDate(item.date);
+                setIsNextMonth(Boolean(item.isNextMonth));
                 if (item.totalInstallments > 1) {
                     setIsInstallment(true);
                     setTotalInstallments(item.totalInstallments);
@@ -244,6 +248,7 @@
                 setTotalInstallments(3);
                 setCurrentInstallment(1);
                 setIsRecurring(false);
+                setIsNextMonth(false);
                 setExpenseDate(new Date().toISOString().split('T')[0]);
             };
 
@@ -267,7 +272,7 @@
             };
 
             const handleStartNewMonth = async () => {
-                const msg = "¡Atención!\n\nAl arrancar un nuevo mes:\n- Las cuotas avanzarán 1 cuota (ej: 1 de 3 -> 2 de 3).\n- Cuotas terminadas se borrarán.\n- Los Gastos Fijos se mantendrán.\n- Los gastos comunes de 1 pago se borrarán.\n\n¿Deseas continuar?";
+                const msg = "¡Atención!\n\nAl arrancar un nuevo mes:\n- Los gastos marcados para 'Próximo mes' pasarán a ser gastos activos de este mes.\n- Las cuotas avanzarán 1 cuota (ej: 1 de 3 -> 2 de 3) y las finalizadas se borrarán.\n- Los Gastos Fijos se mantendrán.\n- Los gastos comunes de 1 pago del mes actual se borrarán.\n\n¿Deseas continuar?";
                 if (!window.confirm(msg)) return;
 
                 setSaving(true);
@@ -329,13 +334,21 @@
             // CÁLCULOS
             const primaryMember = data.members[0] || 'Yo (Principal)';
 
+            // Solo consumos del usuario principal que correspondan al MES ACTUAL (no post-cierre) descontan del sueldo actual
             const primaryExpensesTotal = useMemo(() => {
                 return data.expenses
-                    .filter(e => e.member === primaryMember)
+                    .filter(e => e.member === primaryMember && !e.isNextMonth)
                     .reduce((sum, e) => sum + e.amount, 0);
             }, [data.expenses, primaryMember]);
 
             const remainingSalary = data.salary - primaryExpensesTotal;
+
+            // Consumos post-cierre para próximo sueldo/mes
+            const nextMonthExpensesTotal = useMemo(() => {
+                return data.expenses
+                    .filter(e => e.isNextMonth)
+                    .reduce((sum, e) => sum + e.amount, 0);
+            }, [data.expenses]);
 
             const daysRemaining = useMemo(() => {
                 if (!data.payDate) return 0;
@@ -350,14 +363,17 @@
 
             const dailyBudget = daysRemaining > 0 ? (remainingSalary / daysRemaining) : remainingSalary;
 
-            // Cálculo unificado por cada tarjeta/sección (incluyendo Impuesto al Sello si está marcado como crédito)
+            // Resumen por tarjeta/sección (excluyendo gastos post-cierre del resumen de pago actual, o mostrando ambos)
             const cardSummaries = useMemo(() => {
                 return data.cards.map(cardObj => {
                     const cardName = cardObj.name;
-                    const cardExpenses = data.expenses.filter(e => e.section === cardName);
-                    const subtotal = cardExpenses.reduce((sum, e) => sum + e.amount, 0);
+                    const currentMonthCardExpenses = data.expenses.filter(e => e.section === cardName && !e.isNextMonth);
+                    const nextMonthCardExpenses = data.expenses.filter(e => e.section === cardName && e.isNextMonth);
+                    
+                    const subtotal = currentMonthCardExpenses.reduce((sum, e) => sum + e.amount, 0);
                     const taxStamp = cardObj.isCredit ? subtotal * 0.012 : 0;
                     const total = subtotal + taxStamp;
+                    const nextMonthTotal = nextMonthCardExpenses.reduce((sum, e) => sum + e.amount, 0);
 
                     return {
                         name: cardName,
@@ -365,21 +381,28 @@
                         subtotal,
                         taxStamp,
                         total,
-                        count: cardExpenses.length
+                        nextMonthTotal,
+                        count: currentMonthCardExpenses.length
                     };
                 });
             }, [data.cards, data.expenses]);
 
-            // TOTAL GENERAL ÚNICO (Suma de todas las tarjetas y secciones sin duplicar nada)
+            // TOTAL GENERAL DE GASTOS DEL MES ACTUAL
             const totalGeneralGastos = useMemo(() => {
                 return cardSummaries.reduce((acc, c) => acc + c.total, 0);
             }, [cardSummaries]);
 
+            // Consumo por integrante (del mes actual + separado de próximo mes)
             const totalsByMember = useMemo(() => {
                 const map = {};
-                data.members.forEach(m => map[m] = 0);
+                data.members.forEach(m => map[m] = { current: 0, next: 0 });
                 data.expenses.forEach(e => {
-                    map[e.member] = (map[e.member] || 0) + e.amount;
+                    if (!map[e.member]) map[e.member] = { current: 0, next: 0 };
+                    if (e.isNextMonth) {
+                        map[e.member].next += e.amount;
+                    } else {
+                        map[e.member].current += e.amount;
+                    }
                 });
                 return map;
             }, [data.members, data.expenses]);
@@ -396,7 +419,8 @@
                     item.member.toLowerCase().includes(term) ||
                     item.section.toLowerCase().includes(term) ||
                     String(item.amount).includes(term) ||
-                    item.date.includes(term)
+                    item.date.includes(term) ||
+                    (item.isNextMonth && 'proximo'.includes(term))
                 );
             }, [data.expenses, activeView, searchTerm]);
 
@@ -460,15 +484,17 @@
                         </div>
 
                         <div className="bg-slate-800 text-white p-5 rounded-xl shadow">
-                            <span className="text-xs font-semibold uppercase tracking-wider opacity-80">Total General Gastos</span>
+                            <span className="text-xs font-semibold uppercase tracking-wider opacity-80">Total General Mes Actual</span>
                             <div className="text-3xl font-extrabold mt-1">
                                 ${totalGeneralGastos.toLocaleString('es-AR', { maximumFractionDigits: 0 })}
                             </div>
-                            <span className="text-xs text-slate-400 mt-2 block">Suma total de todas las secciones</span>
+                            <span className="text-xs text-slate-400 mt-2 block">
+                                Próximo mes (post-cierre): ${nextMonthExpensesTotal.toLocaleString('es-AR', { maximumFractionDigits: 0 })}
+                            </span>
                         </div>
                     </div>
 
-                    {/* Botones de Navegación (Tarjetas, Impuestos, Otros unificados) */}
+                    {/* Botones de Navegación */}
                     <div className="mb-6 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
                         <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">Tarjetas y Secciones</h3>
                         <div className="flex flex-wrap gap-2">
@@ -498,6 +524,11 @@
                                                 </span>
                                             )}
                                         </div>
+                                        {cardInfo.nextMonthTotal > 0 && (
+                                            <div className={`text-[10px] mt-0.5 ${isSelected ? 'text-amber-200' : 'text-amber-700 font-semibold'}`}>
+                                                Próx mes: ${cardInfo.nextMonthTotal.toLocaleString('es-AR', { maximumFractionDigits: 0 })}
+                                            </div>
+                                        )}
                                     </button>
                                 );
                             })}
@@ -542,6 +573,11 @@
                                                             <span className="text-[11px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-bold">{item.section}</span>
                                                             <span className="text-[11px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded font-medium">{item.member}</span>
                                                             <span className="text-[11px] text-slate-400">{item.date}</span>
+                                                            {item.isNextMonth && (
+                                                                <span className="text-[11px] bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded">
+                                                                    Próximo Mes (Post-cierre)
+                                                                </span>
+                                                            )}
                                                             {item.totalInstallments > 1 && (
                                                                 <span className="text-[11px] bg-purple-100 text-purple-700 font-bold px-2 py-0.5 rounded">
                                                                     Cuota {item.currentInstallment} de {item.totalInstallments}
@@ -559,7 +595,7 @@
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                     <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
                                         <h3 className="font-bold text-slate-800 mb-1">💳 Totales por Sección / Tarjeta</h3>
-                                        <p className="text-xs text-slate-500 mb-4">Incluye 1,2% Impuesto al Sello en tarjetas de crédito.</p>
+                                        <p className="text-xs text-slate-500 mb-4">Mes actual (+ 1,2% sello en crédito). Los post-cierre pasan al próximo mes.</p>
                                         <div className="space-y-4">
                                             {cardSummaries.map(card => (
                                                 <div key={card.name} onClick={() => setActiveView(card.name)} className="p-3 bg-slate-50 hover:bg-slate-100 cursor-pointer rounded-lg border border-slate-200 transition">
@@ -569,8 +605,13 @@
                                                     </div>
                                                     {card.isCredit && (
                                                         <div className="text-[11px] text-slate-500 flex justify-between pt-2 border-t border-slate-200">
-                                                            <span>Consumos: ${card.subtotal.toLocaleString('es-AR')}</span>
+                                                            <span>Consumos mes: ${card.subtotal.toLocaleString('es-AR')}</span>
                                                             <span className="text-amber-700 font-medium">+ Imp. Sello (1,2%): ${card.taxStamp.toLocaleString('es-AR', { maximumFractionDigits: 0 })}</span>
+                                                        </div>
+                                                    )}
+                                                    {card.nextMonthTotal > 0 && (
+                                                        <div className="text-[11px] text-amber-800 font-semibold pt-1">
+                                                            📌 Próx. cierre: ${card.nextMonthTotal.toLocaleString('es-AR')}
                                                         </div>
                                                     )}
                                                 </div>
@@ -580,19 +621,26 @@
 
                                     <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
                                         <h3 className="font-bold text-slate-800 mb-1">👥 Consumo por Integrante</h3>
-                                        <p className="text-xs text-slate-500 mb-4">Para saber cuánto debe aportar cada integrante.</p>
+                                        <p className="text-xs text-slate-500 mb-4">Consumo de este mes vs. pendiente para el próximo cierre.</p>
                                         <div className="space-y-3">
-                                            {Object.entries(totalsByMember).map(([memberName, total]) => {
+                                            {Object.entries(totalsByMember).map(([memberName, info]) => {
                                                 const isPrimary = memberName === primaryMember;
                                                 return (
                                                     <div key={memberName} className="p-3 bg-slate-50 rounded-lg border border-slate-200 flex justify-between items-center">
                                                         <div>
                                                             <div className="font-bold text-slate-800 text-sm">{memberName}</div>
                                                             <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${isPrimary ? 'bg-indigo-100 text-indigo-700' : 'bg-amber-100 text-amber-800'}`}>
-                                                                {isPrimary ? 'Descuenta del Sueldo' : 'No descuenta del Sueldo'}
+                                                                {isPrimary ? 'Descuenta de Tu Sueldo' : 'No descuenta de Tu Sueldo'}
                                                             </span>
                                                         </div>
-                                                        <span className="font-bold text-slate-900 text-base">${total.toLocaleString('es-AR')}</span>
+                                                        <div className="text-right">
+                                                            <span className="font-bold text-slate-900 text-base block">${info.current.toLocaleString('es-AR')}</span>
+                                                            {info.next > 0 && (
+                                                                <span className="text-[10px] text-amber-800 font-semibold">
+                                                                    Próx: +${info.next.toLocaleString('es-AR')}
+                                                                </span>
+                                                            )}
+                                                        </div>
                                                     </div>
                                                 );
                                             })}
@@ -688,20 +736,36 @@
                                         )}
                                     </div>
 
-                                    {!isInstallment && (
-                                        <div className="md:col-span-3 flex items-center gap-2 pt-1">
+                                    {/* Opciones: Post-cierre / Próximo Mes y Gasto Fijo */}
+                                    <div className="md:col-span-3 flex flex-wrap gap-5 pt-1 items-center">
+                                        <div className="flex items-center gap-2 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200">
                                             <input 
                                                 type="checkbox" 
-                                                id="isRecurring"
-                                                checked={isRecurring}
-                                                onChange={e => setIsRecurring(e.target.checked)}
-                                                className="w-4 h-4 text-indigo-600 rounded"
+                                                id="isNextMonth"
+                                                checked={isNextMonth}
+                                                onChange={e => setIsNextMonth(e.target.checked)}
+                                                className="w-4 h-4 text-amber-600 rounded"
                                             />
-                                            <label htmlFor="isRecurring" className="text-xs text-slate-600">
-                                                Gasto Fijo mensual (se mantiene al renovar mes)
+                                            <label htmlFor="isNextMonth" className="text-xs font-bold text-amber-900">
+                                                Ya cerró tarjeta / Para próximo mes (no descuenta hoy ni se borra al renovar)
                                             </label>
                                         </div>
-                                    )}
+
+                                        {!isInstallment && (
+                                            <div className="flex items-center gap-2">
+                                                <input 
+                                                    type="checkbox" 
+                                                    id="isRecurring"
+                                                    checked={isRecurring}
+                                                    onChange={e => setIsRecurring(e.target.checked)}
+                                                    className="w-4 h-4 text-indigo-600 rounded"
+                                                />
+                                                <label htmlFor="isRecurring" className="text-xs text-slate-600">
+                                                    Gasto Fijo mensual (se mantiene al renovar mes)
+                                                </label>
+                                            </div>
+                                        )}
+                                    </div>
 
                                     <div className="md:col-span-3 mt-2">
                                         <button 
@@ -743,6 +807,11 @@
                                                     <div className="flex flex-wrap gap-2 mt-1 items-center">
                                                         <span className="text-[11px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded font-medium">{item.member}</span>
                                                         <span className="text-[11px] text-slate-400">{item.date}</span>
+                                                        {item.isNextMonth && (
+                                                            <span className="text-[11px] bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded">
+                                                                Próximo Mes (Post-cierre)
+                                                            </span>
+                                                        )}
                                                         {item.totalInstallments > 1 && (
                                                             <span className="text-[11px] bg-purple-100 text-purple-700 font-bold px-2 py-0.5 rounded">
                                                                 Cuota {item.currentInstallment} de {item.totalInstallments}
@@ -814,10 +883,10 @@
                                 </form>
                             </div>
 
-                            {/* Tarjetas / Secciones (Acá podés agregar Impuestos u Otros tal cual pediste) */}
+                            {/* Tarjetas / Secciones */}
                             <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
                                 <h3 className="font-bold text-slate-800 mb-2">💳 Gestionar Secciones y Tarjetas</h3>
-                                <p className="text-xs text-slate-500 mb-4">Podés agregar tarjetas, o crear secciones como "Impuestos", "Otros", etc.</p>
+                                <p className="text-xs text-slate-500 mb-4">Podés agregar tarjetas o crear secciones como "Impuestos", "Otros", etc.</p>
                                 <div className="space-y-2 mb-4">
                                     {data.cards.map(c => (
                                         <div key={c.name} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-100 text-sm">
