@@ -51,6 +51,7 @@
         const { useState, useEffect, useMemo } = React;
 
         const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwYdrWSghwQjTWqGbc2XdifFkFSMoDa-MRNKE_UyrdsuYFy-EeJ5T9d_EM0T_DPZ1yq/exec";
+        const STORAGE_KEY = "gastos_hogar_backup_v1";
 
         const DEFAULT_STATE = {
             salary: 0,
@@ -77,7 +78,6 @@
             return Boolean(val);
         };
 
-        // Convierte cualquier fecha (YYYY-MM-DD o ISO string) a Date local a las 00:00:00
         const toLocalMidnight = (dateInput) => {
             if (!dateInput) return null;
             const str = String(dateInput).trim();
@@ -100,6 +100,24 @@
             const mm = String(d.getMonth() + 1).padStart(2, '0');
             const dd = String(d.getDate()).padStart(2, '0');
             return `${yyyy}-${mm}-${dd}`;
+        };
+
+        const readLocalBackup = () => {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                return raw ? JSON.parse(raw) : null;
+            } catch (e) {
+                return null;
+            }
+        };
+
+        const writeLocalBackup = (expenses) => {
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify({
+                    expenses,
+                    updatedAt: Date.now()
+                }));
+            } catch (e) {}
         };
 
         function App() {
@@ -152,18 +170,55 @@
 
             const fetchData = async () => {
                 setLoading(true);
+                const localBackup = readLocalBackup();
+                const localMap = new Map();
+                if (localBackup?.expenses) {
+                    localBackup.expenses.forEach(item => {
+                        localMap.set(String(item.id), item);
+                    });
+                }
+
                 try {
-                    const res = await fetch(SCRIPT_URL);
+                    const res = await fetch(`${SCRIPT_URL}?t=${Date.now()}`);
                     const json = await res.json();
                     if (json) {
-                        const normalizedExpenses = (json.expenses || []).map(exp => ({
-                            ...exp,
-                            amount: Number(exp.amount || 0),
-                            currentInstallment: Number(exp.currentInstallment || 1),
-                            totalInstallments: Number(exp.totalInstallments || 1),
-                            isRecurring: isRecurringItem(exp.isRecurring),
-                            isNextMonth: isNextMonthItem(exp.isNextMonth)
-                        }));
+                        const serverExpenses = (json.expenses || []).map(exp => {
+                            const idStr = String(exp.id);
+                            const localItem = localMap.get(idStr);
+                            const serverNext = isNextMonthItem(exp.isNextMonth);
+                            const localNext = localItem ? isNextMonthItem(localItem.isNextMonth) : false;
+
+                            // Si en local está marcado como próximo mes y el servidor devolvió false/vacío, preservamos true
+                            const finalNextMonth = serverNext || localNext;
+
+                            return {
+                                ...exp,
+                                id: idStr,
+                                amount: Number(exp.amount || 0),
+                                currentInstallment: Number(exp.currentInstallment || 1),
+                                totalInstallments: Number(exp.totalInstallments || 1),
+                                isRecurring: isRecurringItem(exp.isRecurring),
+                                isNextMonth: finalNextMonth
+                            };
+                        });
+
+                        // Si algún gasto existe en el backup local pero aún no apareció en la respuesta del servidor, lo conservamos
+                        const serverIds = new Set(serverExpenses.map(e => String(e.id)));
+                        const missingFromServer = [];
+                        localMap.forEach((localItem, idStr) => {
+                            if (!serverIds.has(idStr)) {
+                                missingFromServer.push({
+                                    ...localItem,
+                                    id: idStr,
+                                    amount: Number(localItem.amount || 0),
+                                    isRecurring: isRecurringItem(localItem.isRecurring),
+                                    isNextMonth: isNextMonthItem(localItem.isNextMonth)
+                                });
+                            }
+                        });
+
+                        const mergedExpenses = [...missingFromServer, ...serverExpenses];
+                        writeLocalBackup(mergedExpenses);
 
                         const cleanPayDate = normalizeDateInputValue(json.payDate);
 
@@ -173,7 +228,7 @@
                             payDate: cleanPayDate || prev.payDate,
                             members: json.members?.length > 0 ? json.members : prev.members,
                             cards: json.cards?.length > 0 ? json.cards : prev.cards,
-                            expenses: normalizedExpenses
+                            expenses: mergedExpenses
                         }));
                         if (json.members?.length > 0 && !selectedMember) setSelectedMember(json.members[0]);
                         if (json.salary) setNewSalary(json.salary);
@@ -181,6 +236,9 @@
                     }
                 } catch (err) {
                     console.error("Error cargando:", err);
+                    if (localBackup?.expenses) {
+                        setData(prev => ({ ...prev, expenses: localBackup.expenses }));
+                    }
                 } finally {
                     setLoading(false);
                 }
@@ -222,7 +280,7 @@
                 const parsedInstallments = isInstallment ? Number(totalInstallments) : 1;
 
                 const expenseData = {
-                    id: editingId ? editingId : Date.now().toString(),
+                    id: editingId ? String(editingId) : String(Date.now()),
                     amount: Number(amount),
                     description: description || activeView,
                     member: selectedMember || data.members[0],
@@ -244,15 +302,15 @@
                         body: JSON.stringify({ action: actionType, expense: expenseData })
                     });
                     
-                    if (editingId) {
-                        setData(prev => ({
-                            ...prev,
-                            expenses: prev.expenses.map(ex => ex.id === editingId ? expenseData : ex)
-                        }));
-                        setEditingId(null);
-                    } else {
-                        setData(prev => ({ ...prev, expenses: [expenseData, ...prev.expenses] }));
-                    }
+                    setData(prev => {
+                        const nextExpenses = editingId
+                            ? prev.expenses.map(ex => String(ex.id) === String(editingId) ? expenseData : ex)
+                            : [expenseData, ...prev.expenses];
+                        writeLocalBackup(nextExpenses);
+                        return { ...prev, expenses: nextExpenses };
+                    });
+
+                    if (editingId) setEditingId(null);
 
                     setAmount('');
                     setDescription('');
@@ -270,7 +328,7 @@
             };
 
             const handleStartEdit = (item) => {
-                setEditingId(item.id);
+                setEditingId(String(item.id));
                 setAmount(item.amount);
                 setDescription(item.description);
                 setSelectedMember(item.member);
@@ -309,10 +367,14 @@
                         method: 'POST',
                         mode: 'no-cors',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ action: "deleteExpense", id: id })
+                        body: JSON.stringify({ action: "deleteExpense", id: String(id) })
                     });
-                    setData(prev => ({ ...prev, expenses: prev.expenses.filter(e => e.id !== id) }));
-                    if (editingId === id) handleCancelEdit();
+                    setData(prev => {
+                        const nextExpenses = prev.expenses.filter(e => String(e.id) !== String(id));
+                        writeLocalBackup(nextExpenses);
+                        return { ...prev, expenses: nextExpenses };
+                    });
+                    if (String(editingId) === String(id)) handleCancelEdit();
                 } catch (err) {
                     alert("Error al eliminar.");
                 } finally {
@@ -332,6 +394,7 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ action: "newMonth" })
                     });
+                    localStorage.removeItem(STORAGE_KEY);
                     alert("¡Nuevo mes iniciado con éxito!");
                     fetchData();
                 } catch (err) {
@@ -499,7 +562,6 @@
 
             const nextMonthRemainingSalary = data.salary - nextMonthPrimaryExpenses;
 
-            // Calcula la cantidad de días hasta la fecha elegida en el calendario del próximo cobro
             const nextCycleInfo = useMemo(() => {
                 const end = toLocalMidnight(nextPayDate);
                 if (!end) {
@@ -510,9 +572,6 @@
                 const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
                 const currentPay = toLocalMidnight(data.payDate);
 
-                // Si existe fecha de cobro actual y es anterior a la fecha del próximo cobro,
-                // la duración del próximo ciclo es la diferencia entre ambos cobros.
-                // Si no, calcula los días desde hoy hasta la fecha del próximo cobro.
                 let start = today;
                 if (currentPay && currentPay < end) {
                     start = currentPay;
