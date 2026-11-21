@@ -73,7 +73,7 @@
 
             const [activeView, setActiveView] = useState('summary');
             const [searchTerm, setSearchTerm] = useState('');
-            const [nextCycleDays, setNextCycleDays] = useState(30);
+            const [nextPayDate, setNextPayDate] = useState('');
 
             // Formulario carga / edición
             const [editingId, setEditingId] = useState(null);
@@ -353,7 +353,7 @@
                 if (!data.payDate) return 0;
                 const today = new Date();
                 today.setHours(0, 0, 0, 0);
-                const target = new Date(data.payDate);
+                const target = new Date(data.payDate + 'T00:00:00');
                 target.setHours(0, 0, 0, 0);
                 const diffTime = target - today;
                 const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -389,7 +389,7 @@
                 return cardSummaries.reduce((acc, c) => acc + c.total, 0);
             }, [cardSummaries]);
 
-            // PROYECCIÓN PRÓXIMO MES (Al tocar "Arrancar Nuevo Mes")
+            // PROYECCIÓN PRÓXIMO MES
             const projectedNextMonthItems = useMemo(() => {
                 const list = [];
                 data.expenses.forEach(item => {
@@ -448,6 +448,19 @@
             }, [projectedNextMonthItems, primaryMember]);
 
             const nextMonthRemainingSalary = data.salary - nextMonthPrimaryExpenses;
+
+            // Cálculo de días del próximo ciclo usando calendario (si se eligió nextPayDate, calcula días desde payDate/hoy hasta nextPayDate; sino 30 días)
+            const nextCycleDays = useMemo(() => {
+                if (!nextPayDate) return 30;
+                const start = data.payDate ? new Date(data.payDate + 'T00:00:00') : new Date();
+                start.setHours(0, 0, 0, 0);
+                const end = new Date(nextPayDate + 'T00:00:00');
+                end.setHours(0, 0, 0, 0);
+                const diffTime = end - start;
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                return diffDays > 0 ? diffDays : 30;
+            }, [nextPayDate, data.payDate]);
+
             const nextMonthDailyBudget = nextCycleDays > 0 ? (nextMonthRemainingSalary / nextCycleDays) : nextMonthRemainingSalary;
 
             const totalsByMember = useMemo(() => {
@@ -639,17 +652,19 @@
                                     <div className="text-3xl font-extrabold mt-1">
                                         ${nextMonthDailyBudget > 0 ? nextMonthDailyBudget.toLocaleString('es-AR', { maximumFractionDigits: 0 }) : 0} /día
                                     </div>
-                                    <div className="mt-2 flex items-center gap-2 text-xs">
-                                        <span className="opacity-80">Ciclo estimado:</span>
-                                        <input 
-                                            type="number" 
-                                            min="1" 
-                                            max="60" 
-                                            value={nextCycleDays}
-                                            onChange={e => setNextCycleDays(Math.max(1, Number(e.target.value)))}
-                                            className="w-14 bg-indigo-900 text-white font-bold px-2 py-0.5 rounded border border-indigo-400 text-xs outline-none"
-                                        />
-                                        <span className="opacity-80">días</span>
+                                    <div className="mt-2 flex flex-col gap-1 text-xs">
+                                        <div className="flex items-center justify-between gap-1">
+                                            <span className="opacity-80 text-[11px]">Próx. cobro (opcional):</span>
+                                            <input 
+                                                type="date" 
+                                                value={nextPayDate}
+                                                onChange={e => setNextPayDate(e.target.value)}
+                                                className="bg-indigo-900 text-white font-semibold px-1.5 py-0.5 rounded border border-indigo-400 text-[11px] outline-none"
+                                            />
+                                        </div>
+                                        <span className="opacity-75 text-[11px]">
+                                            {nextPayDate ? `Ciclo calculado: ${nextCycleDays} días` : 'Ciclo por defecto: 30 días'}
+                                        </span>
                                     </div>
                                 </div>
 
