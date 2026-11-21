@@ -50,7 +50,7 @@
     <script type="text/babel">
         const { useState, useEffect, useMemo } = React;
 
-        const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxGQRAyoaFwKumVPnbEpmGAc6KefZp4K0_1lVn7wRr7tUq-dR6vbecgc03KTNsBRm1g/exec";
+        const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwYdrWSghwQjTWqGbc2XdifFkFSMoDa-MRNKE_UyrdsuYFy-EeJ5T9d_EM0T_DPZ1yq/exec";
 
         const DEFAULT_STATE = {
             salary: 0,
@@ -65,7 +65,6 @@
             expenses: []
         };
 
-        // Helper estricto para evitar el bug de Boolean("false") === true
         const isNextMonthItem = (val) => {
             if (typeof val === 'boolean') return val;
             if (typeof val === 'string') return val.trim().toLowerCase() === 'true';
@@ -76,6 +75,31 @@
             if (typeof val === 'boolean') return val;
             if (typeof val === 'string') return val.trim().toLowerCase() === 'true';
             return Boolean(val);
+        };
+
+        // Convierte cualquier fecha (YYYY-MM-DD o ISO string) a Date local a las 00:00:00
+        const toLocalMidnight = (dateInput) => {
+            if (!dateInput) return null;
+            const str = String(dateInput).trim();
+            const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+            if (match) {
+                const year = Number(match[1]);
+                const month = Number(match[2]) - 1;
+                const day = Number(match[3]);
+                return new Date(year, month, day, 0, 0, 0, 0);
+            }
+            const parsed = new Date(str);
+            if (isNaN(parsed.getTime())) return null;
+            return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate(), 0, 0, 0, 0);
+        };
+
+        const normalizeDateInputValue = (dateInput) => {
+            const d = toLocalMidnight(dateInput);
+            if (!d) return '';
+            const yyyy = d.getFullYear();
+            const mm = String(d.getMonth() + 1).padStart(2, '0');
+            const dd = String(d.getDate()).padStart(2, '0');
+            return `${yyyy}-${mm}-${dd}`;
         };
 
         function App() {
@@ -141,17 +165,19 @@
                             isNextMonth: isNextMonthItem(exp.isNextMonth)
                         }));
 
+                        const cleanPayDate = normalizeDateInputValue(json.payDate);
+
                         setData(prev => ({
                             ...prev,
                             salary: json.salary !== undefined ? Number(json.salary) : prev.salary,
-                            payDate: json.payDate || prev.payDate,
+                            payDate: cleanPayDate || prev.payDate,
                             members: json.members?.length > 0 ? json.members : prev.members,
                             cards: json.cards?.length > 0 ? json.cards : prev.cards,
                             expenses: normalizedExpenses
                         }));
                         if (json.members?.length > 0 && !selectedMember) setSelectedMember(json.members[0]);
                         if (json.salary) setNewSalary(json.salary);
-                        if (json.payDate) setNewPayDate(json.payDate);
+                        if (cleanPayDate) setNewPayDate(cleanPayDate);
                     }
                 } catch (err) {
                     console.error("Error cargando:", err);
@@ -248,7 +274,7 @@
                 setAmount(item.amount);
                 setDescription(item.description);
                 setSelectedMember(item.member);
-                setExpenseDate(item.date);
+                setExpenseDate(normalizeDateInputValue(item.date) || new Date().toISOString().split('T')[0]);
                 setIsNextMonth(isNextMonthItem(item.isNextMonth));
                 if (item.totalInstallments > 1) {
                     setIsInstallment(true);
@@ -354,7 +380,7 @@
                 saveSettingsToCloud({ ...data, cards: data.cards.filter(c => c.name !== name) });
             };
 
-            // CÁLCULOS MES ACTUAL (Excluye estrictamente los items de próximo mes)
+            // CÁLCULOS MES ACTUAL
             const primaryMember = data.members[0] || 'Yo (Principal)';
 
             const primaryExpensesTotal = useMemo(() => {
@@ -372,13 +398,11 @@
             }, [data.expenses]);
 
             const daysRemaining = useMemo(() => {
-                if (!data.payDate) return 0;
-                const today = new Date();
-                today.setHours(0, 0, 0, 0);
-                const target = new Date(data.payDate + 'T00:00:00');
-                target.setHours(0, 0, 0, 0);
-                const diffTime = target - today;
-                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                const target = toLocalMidnight(data.payDate);
+                if (!target) return 0;
+                const now = new Date();
+                const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+                const diffDays = Math.round((target - today) / (1000 * 60 * 60 * 24));
                 return diffDays > 0 ? diffDays : 0;
             }, [data.payDate]);
 
@@ -475,18 +499,33 @@
 
             const nextMonthRemainingSalary = data.salary - nextMonthPrimaryExpenses;
 
-            const nextCycleDays = useMemo(() => {
-                if (!nextPayDate) return 30;
-                const start = data.payDate ? new Date(data.payDate + 'T00:00:00') : new Date();
-                start.setHours(0, 0, 0, 0);
-                const end = new Date(nextPayDate + 'T00:00:00');
-                end.setHours(0, 0, 0, 0);
-                const diffTime = end - start;
-                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                return diffDays > 0 ? diffDays : 30;
+            // Calcula la cantidad de días hasta la fecha elegida en el calendario del próximo cobro
+            const nextCycleInfo = useMemo(() => {
+                const end = toLocalMidnight(nextPayDate);
+                if (!end) {
+                    return { days: 30, isCustom: false };
+                }
+
+                const now = new Date();
+                const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+                const currentPay = toLocalMidnight(data.payDate);
+
+                // Si existe fecha de cobro actual y es anterior a la fecha del próximo cobro,
+                // la duración del próximo ciclo es la diferencia entre ambos cobros.
+                // Si no, calcula los días desde hoy hasta la fecha del próximo cobro.
+                let start = today;
+                if (currentPay && currentPay < end) {
+                    start = currentPay;
+                }
+
+                const diffDays = Math.round((end - start) / (1000 * 60 * 60 * 24));
+                return {
+                    days: diffDays > 0 ? diffDays : 1,
+                    isCustom: true
+                };
             }, [nextPayDate, data.payDate]);
 
-            const nextMonthDailyBudget = nextCycleDays > 0 ? (nextMonthRemainingSalary / nextCycleDays) : nextMonthRemainingSalary;
+            const nextMonthDailyBudget = nextCycleInfo.days > 0 ? (nextMonthRemainingSalary / nextCycleInfo.days) : nextMonthRemainingSalary;
 
             const totalsByMember = useMemo(() => {
                 const map = {};
@@ -678,16 +717,17 @@
                                     </div>
                                     <div className="mt-2 flex flex-col gap-1 text-xs">
                                         <div className="flex items-center justify-between gap-1">
-                                            <span className="opacity-80 text-[11px]">Próx. cobro (opcional):</span>
+                                            <label htmlFor="nextPayDateInput" className="opacity-85 text-[11px] cursor-pointer">Próx. cobro:</label>
                                             <input 
+                                                id="nextPayDateInput"
                                                 type="date" 
                                                 value={nextPayDate}
                                                 onChange={e => setNextPayDate(e.target.value)}
                                                 className="bg-indigo-900 text-white font-semibold px-1.5 py-0.5 rounded border border-indigo-400 text-[11px] outline-none"
                                             />
                                         </div>
-                                        <span className="opacity-75 text-[11px]">
-                                            {nextPayDate ? `Ciclo calculado: ${nextCycleDays} días` : 'Ciclo por defecto: 30 días'}
+                                        <span className="opacity-80 text-[11px]">
+                                            {nextCycleInfo.isCustom ? `Calculado sobre ${nextCycleInfo.days} días` : 'Por defecto: 30 días'}
                                         </span>
                                     </div>
                                 </div>
