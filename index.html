@@ -50,7 +50,7 @@
     <script type="text/babel">
         const { useState, useEffect, useMemo } = React;
 
-        const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxk0vbW-yK_b1xYUsySrAxiLA92sKePxYg5YSNIQiXN4catUBQGImy8wbiqEbW_TKbZ/exec";
+        const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwYdrWSghwQjTWqGbc2XdifFkFSMoDa-MRNKE_UyrdsuYFy-EeJ5T9d_EM0T_DPZ1yq/exec";
 
         const DEFAULT_STATE = {
             salary: 0,
@@ -73,6 +73,7 @@
 
             const [activeView, setActiveView] = useState('summary');
             const [searchTerm, setSearchTerm] = useState('');
+            const [nextCycleDays, setNextCycleDays] = useState(30);
 
             // Formulario carga / edición
             const [editingId, setEditingId] = useState(null);
@@ -331,10 +332,9 @@
                 saveSettingsToCloud({ ...data, cards: data.cards.filter(c => c.name !== name) });
             };
 
-            // CÁLCULOS
+            // CÁLCULOS MES ACTUAL
             const primaryMember = data.members[0] || 'Yo (Principal)';
 
-            // Solo consumos del usuario principal que correspondan al MES ACTUAL (no post-cierre) descontan del sueldo actual
             const primaryExpensesTotal = useMemo(() => {
                 return data.expenses
                     .filter(e => e.member === primaryMember && !e.isNextMonth)
@@ -343,7 +343,6 @@
 
             const remainingSalary = data.salary - primaryExpensesTotal;
 
-            // Consumos post-cierre para próximo sueldo/mes
             const nextMonthExpensesTotal = useMemo(() => {
                 return data.expenses
                     .filter(e => e.isNextMonth)
@@ -363,7 +362,6 @@
 
             const dailyBudget = daysRemaining > 0 ? (remainingSalary / daysRemaining) : remainingSalary;
 
-            // Resumen por tarjeta/sección (excluyendo gastos post-cierre del resumen de pago actual, o mostrando ambos)
             const cardSummaries = useMemo(() => {
                 return data.cards.map(cardObj => {
                     const cardName = cardObj.name;
@@ -387,12 +385,71 @@
                 });
             }, [data.cards, data.expenses]);
 
-            // TOTAL GENERAL DE GASTOS DEL MES ACTUAL
             const totalGeneralGastos = useMemo(() => {
                 return cardSummaries.reduce((acc, c) => acc + c.total, 0);
             }, [cardSummaries]);
 
-            // Consumo por integrante (del mes actual + separado de próximo mes)
+            // PROYECCIÓN PRÓXIMO MES (Al tocar "Arrancar Nuevo Mes")
+            const projectedNextMonthItems = useMemo(() => {
+                const list = [];
+                data.expenses.forEach(item => {
+                    const curr = Number(item.currentInstallment || 1);
+                    const total = Number(item.totalInstallments || 1);
+
+                    if (item.isNextMonth) {
+                        list.push({
+                            ...item,
+                            projectedReason: 'Próximo Mes (Post-cierre)',
+                            projectedInstallment: total > 1 ? `${curr} de ${total}` : null
+                        });
+                    } else if (total > 1) {
+                        if (curr < total) {
+                            list.push({
+                                ...item,
+                                projectedReason: 'Cuota siguiente',
+                                projectedInstallment: `${curr + 1} de ${total}`
+                            });
+                        }
+                    } else if (item.isRecurring) {
+                        list.push({
+                            ...item,
+                            projectedReason: 'Gasto Fijo',
+                            projectedInstallment: null
+                        });
+                    }
+                });
+                return list;
+            }, [data.expenses]);
+
+            const nextMonthCardTotals = useMemo(() => {
+                return data.cards.map(cardObj => {
+                    const cardName = cardObj.name;
+                    const items = projectedNextMonthItems.filter(i => i.section === cardName);
+                    const subtotal = items.reduce((sum, i) => sum + i.amount, 0);
+                    const taxStamp = cardObj.isCredit ? subtotal * 0.012 : 0;
+                    return {
+                        name: cardName,
+                        isCredit: cardObj.isCredit,
+                        subtotal,
+                        taxStamp,
+                        total: subtotal + taxStamp
+                    };
+                });
+            }, [data.cards, projectedNextMonthItems]);
+
+            const nextMonthTotalGeneral = useMemo(() => {
+                return nextMonthCardTotals.reduce((acc, c) => acc + c.total, 0);
+            }, [nextMonthCardTotals]);
+
+            const nextMonthPrimaryExpenses = useMemo(() => {
+                return projectedNextMonthItems
+                    .filter(i => i.member === primaryMember)
+                    .reduce((sum, i) => sum + i.amount, 0);
+            }, [projectedNextMonthItems, primaryMember]);
+
+            const nextMonthRemainingSalary = data.salary - nextMonthPrimaryExpenses;
+            const nextMonthDailyBudget = nextCycleDays > 0 ? (nextMonthRemainingSalary / nextCycleDays) : nextMonthRemainingSalary;
+
             const totalsByMember = useMemo(() => {
                 const map = {};
                 data.members.forEach(m => map[m] = { current: 0, next: 0 });
@@ -409,7 +466,7 @@
 
             const filteredExpenses = useMemo(() => {
                 let list = data.expenses;
-                if (activeView !== 'summary' && activeView !== 'settings') {
+                if (activeView !== 'summary' && activeView !== 'settings' && activeView !== 'nextMonth') {
                     list = list.filter(e => e.section === activeView);
                 }
                 if (!searchTerm.trim()) return list;
@@ -423,6 +480,18 @@
                     (item.isNextMonth && 'proximo'.includes(term))
                 );
             }, [data.expenses, activeView, searchTerm]);
+
+            const filteredNextMonthItems = useMemo(() => {
+                if (!searchTerm.trim()) return projectedNextMonthItems;
+                const term = searchTerm.toLowerCase();
+                return projectedNextMonthItems.filter(item =>
+                    item.description.toLowerCase().includes(term) ||
+                    item.member.toLowerCase().includes(term) ||
+                    item.section.toLowerCase().includes(term) ||
+                    item.projectedReason.toLowerCase().includes(term) ||
+                    String(item.amount).includes(term)
+                );
+            }, [projectedNextMonthItems, searchTerm]);
 
             if (loading) {
                 return (
@@ -465,34 +534,36 @@
                         </div>
                     </header>
 
-                    {/* Métrica Sueldo y Presupuesto Diario */}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                        <div className="bg-emerald-600 text-white p-5 rounded-xl shadow">
-                            <span className="text-xs font-semibold uppercase tracking-wider opacity-80">Saldo Restante (Tu Sueldo)</span>
-                            <div className="text-3xl font-extrabold mt-1">${remainingSalary.toLocaleString('es-AR')}</div>
-                            <span className="text-xs opacity-75 mt-2 block">Sueldo Base: ${data.salary.toLocaleString('es-AR')}</span>
-                        </div>
-
-                        <div className="bg-indigo-600 text-white p-5 rounded-xl shadow">
-                            <span className="text-xs font-semibold uppercase tracking-wider opacity-80">Disponible por Día</span>
-                            <div className="text-3xl font-extrabold mt-1">
-                                ${dailyBudget > 0 ? dailyBudget.toLocaleString('es-AR', { maximumFractionDigits: 0 }) : 0} /día
+                    {/* Métrica Sueldo y Presupuesto Diario (Mes Actual) */}
+                    {activeView !== 'nextMonth' && (
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                            <div className="bg-emerald-600 text-white p-5 rounded-xl shadow">
+                                <span className="text-xs font-semibold uppercase tracking-wider opacity-80">Saldo Restante (Tu Sueldo)</span>
+                                <div className="text-3xl font-extrabold mt-1">${remainingSalary.toLocaleString('es-AR')}</div>
+                                <span className="text-xs opacity-75 mt-2 block">Sueldo Base: ${data.salary.toLocaleString('es-AR')}</span>
                             </div>
-                            <span className="text-xs opacity-75 mt-2 block">
-                                {daysRemaining > 0 ? `Faltan ${daysRemaining} días para cobrar` : 'Configurá fecha de cobro'}
-                            </span>
-                        </div>
 
-                        <div className="bg-slate-800 text-white p-5 rounded-xl shadow">
-                            <span className="text-xs font-semibold uppercase tracking-wider opacity-80">Total General Mes Actual</span>
-                            <div className="text-3xl font-extrabold mt-1">
-                                ${totalGeneralGastos.toLocaleString('es-AR', { maximumFractionDigits: 0 })}
+                            <div className="bg-indigo-600 text-white p-5 rounded-xl shadow">
+                                <span className="text-xs font-semibold uppercase tracking-wider opacity-80">Disponible por Día</span>
+                                <div className="text-3xl font-extrabold mt-1">
+                                    ${dailyBudget > 0 ? dailyBudget.toLocaleString('es-AR', { maximumFractionDigits: 0 }) : 0} /día
+                                </div>
+                                <span className="text-xs opacity-75 mt-2 block">
+                                    {daysRemaining > 0 ? `Faltan ${daysRemaining} días para cobrar` : 'Configurá fecha de cobro'}
+                                </span>
                             </div>
-                            <span className="text-xs text-slate-400 mt-2 block">
-                                Próximo mes (post-cierre): ${nextMonthExpensesTotal.toLocaleString('es-AR', { maximumFractionDigits: 0 })}
-                            </span>
+
+                            <div className="bg-slate-800 text-white p-5 rounded-xl shadow">
+                                <span className="text-xs font-semibold uppercase tracking-wider opacity-80">Total General Mes Actual</span>
+                                <div className="text-3xl font-extrabold mt-1">
+                                    ${totalGeneralGastos.toLocaleString('es-AR', { maximumFractionDigits: 0 })}
+                                </div>
+                                <span className="text-xs text-slate-400 mt-2 block">
+                                    Próximo mes (post-cierre): ${nextMonthExpensesTotal.toLocaleString('es-AR', { maximumFractionDigits: 0 })}
+                                </span>
+                            </div>
                         </div>
-                    </div>
+                    )}
 
                     {/* Botones de Navegación */}
                     <div className="mb-6 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
@@ -503,6 +574,16 @@
                                 className={`px-4 py-2.5 rounded-lg font-bold text-sm transition ${activeView === 'summary' ? 'bg-indigo-600 text-white shadow' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
                             >
                                 📊 Resumen General
+                            </button>
+
+                            <button 
+                                onClick={() => { setActiveView('nextMonth'); handleCancelEdit(); setSearchTerm(''); }}
+                                className={`px-4 py-2.5 rounded-lg font-bold text-sm transition flex items-center gap-1.5 ${activeView === 'nextMonth' ? 'bg-amber-600 text-white shadow' : 'bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100'}`}
+                            >
+                                ⏭️ Ver Próx. Mes
+                                <span className={`text-xs px-2 py-0.5 rounded-full font-extrabold ${activeView === 'nextMonth' ? 'bg-amber-700 text-white' : 'bg-amber-200 text-amber-900'}`}>
+                                    {projectedNextMonthItems.length}
+                                </span>
                             </button>
 
                             {cardSummaries.map(cardInfo => {
@@ -541,6 +622,112 @@
                             </button>
                         </div>
                     </div>
+
+                    {/* VISTA: VER PRÓXIMO MES */}
+                    {activeView === 'nextMonth' && (
+                        <div className="space-y-6">
+                            {/* Métricas Proyectadas Próximo Mes */}
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div className="bg-emerald-700 text-white p-5 rounded-xl shadow">
+                                    <span className="text-xs font-semibold uppercase tracking-wider opacity-80">Saldo Restante Próx. Mes</span>
+                                    <div className="text-3xl font-extrabold mt-1">${nextMonthRemainingSalary.toLocaleString('es-AR', { maximumFractionDigits: 0 })}</div>
+                                    <span className="text-xs opacity-75 mt-2 block">Sueldo Base: ${data.salary.toLocaleString('es-AR')}</span>
+                                </div>
+
+                                <div className="bg-indigo-700 text-white p-5 rounded-xl shadow">
+                                    <span className="text-xs font-semibold uppercase tracking-wider opacity-80">Disponible por Día Próx. Mes</span>
+                                    <div className="text-3xl font-extrabold mt-1">
+                                        ${nextMonthDailyBudget > 0 ? nextMonthDailyBudget.toLocaleString('es-AR', { maximumFractionDigits: 0 }) : 0} /día
+                                    </div>
+                                    <div className="mt-2 flex items-center gap-2 text-xs">
+                                        <span className="opacity-80">Ciclo estimado:</span>
+                                        <input 
+                                            type="number" 
+                                            min="1" 
+                                            max="60" 
+                                            value={nextCycleDays}
+                                            onChange={e => setNextCycleDays(Math.max(1, Number(e.target.value)))}
+                                            className="w-14 bg-indigo-900 text-white font-bold px-2 py-0.5 rounded border border-indigo-400 text-xs outline-none"
+                                        />
+                                        <span className="opacity-80">días</span>
+                                    </div>
+                                </div>
+
+                                <div className="bg-amber-700 text-white p-5 rounded-xl shadow">
+                                    <span className="text-xs font-semibold uppercase tracking-wider opacity-80">Total General Próx. Mes</span>
+                                    <div className="text-3xl font-extrabold mt-1">
+                                        ${nextMonthTotalGeneral.toLocaleString('es-AR', { maximumFractionDigits: 0 })}
+                                    </div>
+                                    <span className="text-xs opacity-80 mt-2 block">Post-cierre + Cuotas + Fijos</span>
+                                </div>
+                            </div>
+
+                            {/* Resumen por Tarjeta / Sección para Próximo Mes */}
+                            <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+                                <h3 className="font-bold text-slate-800 mb-1">💳 Totales Proyectados por Tarjeta / Sección</h3>
+                                <p className="text-xs text-slate-500 mb-4">Incluye 1,2% sello en crédito sobre los consumos proyectados del próximo mes.</p>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    {nextMonthCardTotals.map(c => (
+                                        <div key={c.name} className="p-3 bg-slate-50 rounded-lg border border-slate-200">
+                                            <div className="flex justify-between items-center">
+                                                <span className="font-bold text-slate-800 text-sm">{c.name}</span>
+                                                <span className="font-extrabold text-slate-900 text-base">${c.total.toLocaleString('es-AR', { maximumFractionDigits: 0 })}</span>
+                                            </div>
+                                            {c.isCredit && c.subtotal > 0 && (
+                                                <div className="text-[11px] text-slate-500 flex justify-between mt-1 pt-1 border-t border-slate-200">
+                                                    <span>Sub: ${c.subtotal.toLocaleString('es-AR')}</span>
+                                                    <span className="text-amber-700">+ Sello: ${c.taxStamp.toLocaleString('es-AR', { maximumFractionDigits: 0 })}</span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Buscador */}
+                            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                                <input 
+                                    type="text" 
+                                    placeholder="🔍 Filtrar movimientos del próximo mes (post-cierre, cuota, fijo, detalle, monto)..." 
+                                    value={searchTerm}
+                                    onChange={e => setSearchTerm(e.target.value)}
+                                    className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-500"
+                                />
+                            </div>
+
+                            {/* Detalle de Movimientos que pasan al Próximo Mes */}
+                            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                                <div className="p-4 bg-amber-50 border-b border-amber-200 flex justify-between items-center">
+                                    <h3 className="font-bold text-amber-950 text-sm">Movimientos que pasan al Próximo Mes</h3>
+                                    <span className="text-xs font-semibold text-amber-800">{filteredNextMonthItems.length} movimientos</span>
+                                </div>
+                                {filteredNextMonthItems.length === 0 ? (
+                                    <div className="p-8 text-center text-slate-400 text-sm">No hay movimientos marcados para el próximo mes, cuotas pendientes ni fijos.</div>
+                                ) : (
+                                    <div className="divide-y divide-slate-100">
+                                        {filteredNextMonthItems.map((item, idx) => (
+                                            <div key={`${item.id}-${idx}`} className="p-4 flex flex-wrap justify-between items-center gap-3 hover:bg-slate-50 transition">
+                                                <div>
+                                                    <div className="font-semibold text-slate-800 text-sm">{item.description}</div>
+                                                    <div className="flex flex-wrap gap-2 mt-1 items-center">
+                                                        <span className="text-[11px] bg-amber-100 text-amber-900 px-2 py-0.5 rounded font-bold">{item.projectedReason}</span>
+                                                        <span className="text-[11px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-bold">{item.section}</span>
+                                                        <span className="text-[11px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded font-medium">{item.member}</span>
+                                                        {item.projectedInstallment && (
+                                                            <span className="text-[11px] bg-purple-100 text-purple-700 font-bold px-2 py-0.5 rounded">
+                                                                Será Cuota {item.projectedInstallment}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                <div className="font-bold text-slate-900 text-base">${item.amount.toLocaleString('es-AR')}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
 
                     {/* VISTA: RESUMEN GENERAL */}
                     {activeView === 'summary' && (
@@ -652,7 +839,7 @@
                     )}
 
                     {/* VISTA: SECCIÓN ESPECÍFICA */}
-                    {activeView !== 'summary' && activeView !== 'settings' && (
+                    {activeView !== 'summary' && activeView !== 'settings' && activeView !== 'nextMonth' && (
                         <div className="space-y-6">
                             <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
                                 <div className="flex justify-between items-center mb-4">
@@ -736,7 +923,6 @@
                                         )}
                                     </div>
 
-                                    {/* Opciones: Post-cierre / Próximo Mes y Gasto Fijo */}
                                     <div className="md:col-span-3 flex flex-wrap gap-5 pt-1 items-center">
                                         <div className="flex items-center gap-2 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200">
                                             <input 
