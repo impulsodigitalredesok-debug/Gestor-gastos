@@ -50,8 +50,7 @@
     <script type="text/babel">
         const { useState, useEffect, useMemo } = React;
 
-        const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwYdrWSghwQjTWqGbc2XdifFkFSMoDa-MRNKE_UyrdsuYFy-EeJ5T9d_EM0T_DPZ1yq/exec";
-        const STORAGE_KEY = "gastos_hogar_backup_v1";
+        const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzoe7NlqHPPM99nMTSHm97JQoOMIaHKDkfAOWagzA9fkOcVjaPi_cmNWtp4WUbJuOEQ/exec";
 
         const DEFAULT_STATE = {
             salary: 0,
@@ -100,24 +99,6 @@
             const mm = String(d.getMonth() + 1).padStart(2, '0');
             const dd = String(d.getDate()).padStart(2, '0');
             return `${yyyy}-${mm}-${dd}`;
-        };
-
-        const readLocalBackup = () => {
-            try {
-                const raw = localStorage.getItem(STORAGE_KEY);
-                return raw ? JSON.parse(raw) : null;
-            } catch (e) {
-                return null;
-            }
-        };
-
-        const writeLocalBackup = (expenses) => {
-            try {
-                localStorage.setItem(STORAGE_KEY, JSON.stringify({
-                    expenses,
-                    updatedAt: Date.now()
-                }));
-            } catch (e) {}
         };
 
         function App() {
@@ -170,55 +151,19 @@
 
             const fetchData = async () => {
                 setLoading(true);
-                const localBackup = readLocalBackup();
-                const localMap = new Map();
-                if (localBackup?.expenses) {
-                    localBackup.expenses.forEach(item => {
-                        localMap.set(String(item.id), item);
-                    });
-                }
-
                 try {
                     const res = await fetch(`${SCRIPT_URL}?t=${Date.now()}`);
                     const json = await res.json();
                     if (json) {
-                        const serverExpenses = (json.expenses || []).map(exp => {
-                            const idStr = String(exp.id);
-                            const localItem = localMap.get(idStr);
-                            const serverNext = isNextMonthItem(exp.isNextMonth);
-                            const localNext = localItem ? isNextMonthItem(localItem.isNextMonth) : false;
-
-                            // Si en local está marcado como próximo mes y el servidor devolvió false/vacío, preservamos true
-                            const finalNextMonth = serverNext || localNext;
-
-                            return {
-                                ...exp,
-                                id: idStr,
-                                amount: Number(exp.amount || 0),
-                                currentInstallment: Number(exp.currentInstallment || 1),
-                                totalInstallments: Number(exp.totalInstallments || 1),
-                                isRecurring: isRecurringItem(exp.isRecurring),
-                                isNextMonth: finalNextMonth
-                            };
-                        });
-
-                        // Si algún gasto existe en el backup local pero aún no apareció en la respuesta del servidor, lo conservamos
-                        const serverIds = new Set(serverExpenses.map(e => String(e.id)));
-                        const missingFromServer = [];
-                        localMap.forEach((localItem, idStr) => {
-                            if (!serverIds.has(idStr)) {
-                                missingFromServer.push({
-                                    ...localItem,
-                                    id: idStr,
-                                    amount: Number(localItem.amount || 0),
-                                    isRecurring: isRecurringItem(localItem.isRecurring),
-                                    isNextMonth: isNextMonthItem(localItem.isNextMonth)
-                                });
-                            }
-                        });
-
-                        const mergedExpenses = [...missingFromServer, ...serverExpenses];
-                        writeLocalBackup(mergedExpenses);
+                        const normalizedExpenses = (json.expenses || []).map(exp => ({
+                            ...exp,
+                            id: String(exp.id),
+                            amount: Number(exp.amount || 0),
+                            currentInstallment: Number(exp.currentInstallment || 1),
+                            totalInstallments: Number(exp.totalInstallments || 1),
+                            isRecurring: isRecurringItem(exp.isRecurring),
+                            isNextMonth: isNextMonthItem(exp.isNextMonth)
+                        }));
 
                         const cleanPayDate = normalizeDateInputValue(json.payDate);
 
@@ -228,7 +173,7 @@
                             payDate: cleanPayDate || prev.payDate,
                             members: json.members?.length > 0 ? json.members : prev.members,
                             cards: json.cards?.length > 0 ? json.cards : prev.cards,
-                            expenses: mergedExpenses
+                            expenses: normalizedExpenses
                         }));
                         if (json.members?.length > 0 && !selectedMember) setSelectedMember(json.members[0]);
                         if (json.salary) setNewSalary(json.salary);
@@ -236,9 +181,6 @@
                     }
                 } catch (err) {
                     console.error("Error cargando:", err);
-                    if (localBackup?.expenses) {
-                        setData(prev => ({ ...prev, expenses: localBackup.expenses }));
-                    }
                 } finally {
                     setLoading(false);
                 }
@@ -278,6 +220,8 @@
 
                 setSaving(true);
                 const parsedInstallments = isInstallment ? Number(totalInstallments) : 1;
+                const nextMonthFlag = Boolean(isNextMonth);
+                const recurringFlag = Boolean(isRecurring);
 
                 const expenseData = {
                     id: editingId ? String(editingId) : String(Date.now()),
@@ -287,9 +231,9 @@
                     section: activeView,
                     currentInstallment: editingId ? currentInstallment : (parsedInstallments > 1 ? 1 : 1),
                     totalInstallments: parsedInstallments > 1 ? parsedInstallments : 1,
-                    isRecurring: Boolean(isRecurring),
+                    isRecurring: recurringFlag,
                     date: expenseDate || new Date().toISOString().split('T')[0],
-                    isNextMonth: Boolean(isNextMonth)
+                    isNextMonth: nextMonthFlag
                 };
 
                 const actionType = editingId ? "editExpense" : "addExpense";
@@ -301,17 +245,12 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ action: actionType, expense: expenseData })
                     });
-                    
-                    setData(prev => {
-                        const nextExpenses = editingId
-                            ? prev.expenses.map(ex => String(ex.id) === String(editingId) ? expenseData : ex)
-                            : [expenseData, ...prev.expenses];
-                        writeLocalBackup(nextExpenses);
-                        return { ...prev, expenses: nextExpenses };
-                    });
+
+                    // Pausa breve para dar tiempo a que Google Sheets escriba antes de refrescar
+                    await new Promise(resolve => setTimeout(resolve, 900));
+                    await fetchData();
 
                     if (editingId) setEditingId(null);
-
                     setAmount('');
                     setDescription('');
                     setIsInstallment(false);
@@ -369,11 +308,8 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ action: "deleteExpense", id: String(id) })
                     });
-                    setData(prev => {
-                        const nextExpenses = prev.expenses.filter(e => String(e.id) !== String(id));
-                        writeLocalBackup(nextExpenses);
-                        return { ...prev, expenses: nextExpenses };
-                    });
+                    await new Promise(resolve => setTimeout(resolve, 800));
+                    await fetchData();
                     if (String(editingId) === String(id)) handleCancelEdit();
                 } catch (err) {
                     alert("Error al eliminar.");
@@ -394,9 +330,9 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ action: "newMonth" })
                     });
-                    localStorage.removeItem(STORAGE_KEY);
+                    await new Promise(resolve => setTimeout(resolve, 1000));
                     alert("¡Nuevo mes iniciado con éxito!");
-                    fetchData();
+                    await fetchData();
                 } catch (err) {
                     alert("Error al renovar el mes.");
                 } finally {
